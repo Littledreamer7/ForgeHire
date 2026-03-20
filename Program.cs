@@ -1,13 +1,25 @@
+using ForgeHire.Auth;
+using ForgeHire.Auth.Auth_Services;
+using ForgeHire.Data;
+using ForgeHire.Helpers;
+using ForgeHire.Middleware;
+using ForgeHire.Repositories;
+using ForgeHire.Repositories.IRepositories;
+using ForgeHire.Services;
+using ForgeHire.Services.IServices;
+
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+
 using Serilog;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-#region Serilog Configuration
+#region 🔹 SERILOG
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
     .WriteTo.File("Logs/log-.txt", rollingInterval: RollingInterval.Day)
@@ -16,7 +28,7 @@ Log.Logger = new LoggerConfiguration()
 builder.Host.UseSerilog();
 #endregion
 
-#region Database Configuration
+#region 🔹 DATABASE
 var connectionString = builder.Configuration.GetConnectionString("DB_Conn");
 
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -26,7 +38,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     ));
 #endregion
 
-#region Swagger Configuration
+#region 🔹 SWAGGER
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -37,7 +49,7 @@ builder.Services.AddSwaggerGen(options =>
         Scheme = "bearer",
         BearerFormat = "JWT",
         In = ParameterLocation.Header,
-        Description = "Enter JWT token like this: Bearer {your token}"
+        Description = "Enter: Bearer {token}"
     });
 
     options.AddSecurityRequirement(new OpenApiSecurityRequirement
@@ -57,19 +69,15 @@ builder.Services.AddSwaggerGen(options =>
 });
 #endregion
 
-#region JWT Configuration
-var jwtKey = builder.Configuration["Jwt:Key"];
+#region 🔹 JWT AUTH
+var jwtKey = builder.Configuration["Jwt:Key"] ?? throw new Exception("JWT Key missing");
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 var jwtAudience = builder.Configuration["Jwt:Audience"];
 
-builder.Services.AddAuthentication(options =>
-{
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
-})
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = true;
+    options.RequireHttpsMetadata = false;
     options.SaveToken = true;
 
     options.TokenValidationParameters = new TokenValidationParameters
@@ -93,23 +101,106 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddAuthorization();
 #endregion
 
-builder.Services.AddControllers();
+#region 🔹 CONTROLLERS
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<ValidationFilter>();
+})
+.AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.Converters
+        .Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+});
+#endregion
+
+#region 🔹 COOKIE POLICY
+builder.Services.Configure<CookiePolicyOptions>(options =>
+{
+    options.MinimumSameSitePolicy = SameSiteMode.Lax;
+});
+#endregion
+
+#region 🔹 DEPENDENCY INJECTION
+
+// ================= AUTH =================
+builder.Services.AddScoped<Auth_JwtService>();
+builder.Services.AddScoped<IAuthService, AuthService>();
+//builder.Services.AddScoped<IOtpService, OtpService>();
+builder.Services.AddScoped<ISmsService, DummySmsService>();
+
+// ================= COMPANY =================
+builder.Services.AddScoped<ICompanyService, CompanyService>();
+builder.Services.AddScoped<ICompanyUserRepository, CompanyUserRepository>();
+builder.Services.AddScoped<ICompanyRepository, CompanyRepository>();
+
+// ================= CANDIDATE =================
+builder.Services.AddScoped<ICandidateService, CandidateService>();
+builder.Services.AddScoped<ICandidateRepository, CandidateRepository>();
+
+// ================= JOB =================
+builder.Services.AddScoped<IJobService, JobService>();
+builder.Services.AddScoped<IJobRepository, JobRepository>();
+
+// ================= JOBAPPLICATION =================
+builder.Services.AddScoped<IJobApplicationRepository, JobApplicationRepository>();
+builder.Services.AddScoped<IJobApplicationService, JobApplicationService>();
+
+// ================= USER =================
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+
+// ================= ROLE =================
+builder.Services.AddScoped<IRoleService, RoleService>();
+
+// ================= TENANT =================
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<TenantProvider>();
+
+#endregion
+
+#region 🔹 API BEHAVIOR
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.SuppressModelStateInvalidFilter = false;
+});
+#endregion
+
+#region 🔹 CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAngular", policy =>
+    {
+        policy.WithOrigins("http://localhost:4200")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
+#endregion
 
 var app = builder.Build();
 
-#region Middleware Pipeline
+#region 🔹 PIPELINE
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+//GLOBAL ERROR HANDLER
+app.UseMiddleware<GlobalExceptionMiddleware>();
+
 app.UseHttpsRedirection();
+
+app.UseCors("AllowAngular");
+
+app.UseCookiePolicy();
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
 #endregion
 
 app.Run();
